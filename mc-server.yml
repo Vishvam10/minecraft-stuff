@@ -1,0 +1,128 @@
+services:
+  # ------------------------------------
+  # Minecraft Server (Fabric)
+  # ------------------------------------
+  mc:
+    image: itzg/minecraft-server:latest
+    container_name: mc
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    ports:
+      - "25565:25565"
+    environment:
+      EULA: "TRUE"
+      TYPE: "FABRIC"
+      VERSION: "1.21.4"
+      MEMORY: "6144M"
+      MAX_PLAYERS: "2"
+      ONLINE_MODE: "false"
+      USE_AIKAR_FLAGS: "true"
+      USE_MEOWICE_FLAGS: "true"
+      DIFFICULTY: "2"
+      SIMULATION_DISTANCE: "16"
+      VIEW_DISTANCE: "16"
+      LEVEL: "Yo"
+
+      # Mods
+      MODRINTH_PROJECTS: |-
+        fabric-api
+        ferrite-core
+        lithium
+        c2me-fabric
+        modernfix
+        krypton
+        alternate-current
+        viafabricplus
+
+      # Plugins
+      PLUGINS: |-
+        https://modrinth.com/plugin/chunky
+
+      # Datapacks
+      DATAPACKS: |-
+        https://cdn.modrinth.com/data/8oi3bsk5/versions/MuJMtPGQ/Terralith_1.21.x_v2.5.8.jar
+
+      # RCON commands
+      ENABLE_RCON: "true"
+      RCON_PORT: 25575
+      RCON_PASSWORD: "minecraft"
+      RCON_CMDS_STARTUP: |-
+        pregen start 500
+      RCON_CMDS_FIRST_CONNECT: |-
+        pregen stop
+
+      # Logs
+      ENABLE_ROLLING_LOGS: "true"
+      LOG_TIMESTAMP: "true"
+    volumes:
+      - ./mc-data:/data
+
+  # ------------------------------------
+  # Restore container (init)
+  # ------------------------------------
+
+  mc-restore:
+    build:
+      context: .
+      dockerfile: mc-restore.Dockerfile
+    container_name: mc-restore
+    restart: "no"
+    environment:
+      RESTORE_ON_STARTUP: "true"
+      RCLONE_REMOTE: gdrive:mc-backups
+      DISCORD_WEBHOOK_URL: "https://discord.com/api/webhooks/1453091189770162258/7zCvMHv02dzejaYsw68mJQXUCWMFjpc9tirgjJuwGFb0xLUM6ryGoKlX6C3nE_F5m6_7"
+      DISCORD_USERNAME: "Minecraft Backup Bot"
+    volumes:
+      - ./mc-data:/data
+      
+      # No :ro so restore can write temp files if needed
+      - ./mc-backups:/backups
+
+      # No :ro so rclone can refresh tokens
+      - ~/.config/rclone:/config/rclone
+      - ./restore-notify.sh:/restore-notify.sh:ro
+    entrypoint: /restore-notify.sh
+
+  # ------------------------------------
+  # Backup container
+  # ------------------------------------
+  mc-backup:
+    image: itzg/mc-backup:latest
+    container_name: mc-backup
+    restart: unless-stopped
+    depends_on:
+      mc:
+        condition: service_healthy
+    environment:
+      BACKUP_INTERVAL: "1m"
+      PRUNE_BACKUPS_DAYS: "30"
+
+      # RCON to safely flush world
+      RCON_HOST: mc
+      RCON_PORT: 25575
+      RCON_PASSWORD: "minecraft"
+
+      # Debug
+      INITIAL_DELAY: 10
+
+      # Local tar backup
+      BACKUP_METHOD: tar
+      TAR_COMPRESS_METHOD: zstd
+      ZSTD_LEVEL: 3
+      DEST_DIR: /backups
+
+      # Remote backup via rclone
+      RCLONE_REMOTE: gdrive:mc-backups
+
+      # Discord notification configuration
+      DISCORD_WEBHOOK_URL: "https://discord.com/api/webhooks/1453091189770162258/7zCvMHv02dzejaYsw68mJQXUCWMFjpc9tirgjJuwGFb0xLUM6ryGoKlX6C3nE_F5m6_7"
+      DISCORD_USERNAME: "Minecraft Backup Bot"
+
+      # Post-backup notification script
+      POST_BACKUP_SCRIPT_FILE: /backup-notify.sh
+    volumes:
+      - ./mc-data:/data:ro
+      - ./mc-backups:/backups
+      - ~/.config/rclone:/config/rclone:ro
+      - ./backup-notify.sh:/backup-notify.sh:ro
