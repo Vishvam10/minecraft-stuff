@@ -13,6 +13,7 @@ services:
     environment:
       EULA: "TRUE"
       TYPE: "FABRIC"
+      SEED: 12
       VERSION: "1.21.4"
       MEMORY: "6144M"
       MAX_PLAYERS: "2"
@@ -63,14 +64,17 @@ services:
   # ------------------------------------
 
   mc-restore:
-    build:
-      context: .
-      dockerfile: mc-restore.Dockerfile
+    image: itzg/mc-backup:latest
     container_name: mc-restore
     restart: "no"
+
+    # As the restore is interactive
+    stdin_open: true
+    tty: true 
     environment:
       RESTORE_ON_STARTUP: "true"
       RCLONE_REMOTE: gdrive:mc-backups
+      RCLONE_CONFIG: /config/rclone/rclone.conf
       DISCORD_WEBHOOK_URL: "https://discord.com/api/webhooks/1453091189770162258/7zCvMHv02dzejaYsw68mJQXUCWMFjpc9tirgjJuwGFb0xLUM6ryGoKlX6C3nE_F5m6_7"
       DISCORD_USERNAME: "Minecraft Backup Bot"
     volumes:
@@ -124,5 +128,5 @@ services:
     volumes:
       - ./mc-data:/data:ro
       - ./mc-backups:/backups
-      - ~/.config/rclone:/config/rclone:ro
+      - ~/.config/rclone:/config/rclone
       - ./backup-notify.sh:/backup-notify.sh:ro

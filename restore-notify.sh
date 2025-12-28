@@ -1,5 +1,4 @@
 #!/bin/bash
-
 set +e
 
 : "${SRC_DIR:=/data}"
@@ -9,89 +8,184 @@ set +e
 : "${DISCORD_USERNAME:=Minecraft Restore Bot}"
 : "${DEBUG:=false}"
 
-if [[ ${DEBUG,,} = true ]]; then
-    set -x  
-fi
+PAGE_SIZE=5
+[[ ${DEBUG,,} == true ]] && set -x
 
 START_TIME=$(date +%s)
 RESTORE_STATUS="Failure"
 RESTORE_PATH="None"
 LOG_CONTENT=""
 
-echo "[restore-notify] Triggered at $(date)"
+echo
+echo "======================================"
+echo " Minecraft Interactive Restore Tool"
+echo "======================================"
+echo
 
 # -----------------------------
-# Determine source
+# Check if data folder already exists
 # -----------------------------
-LATEST_LOCAL=$(ls -1t "$DEST_DIR"/*.tar.zst 2>/dev/null | head -n1 || true)
+mkdir -p "$SRC_DIR"
 
-if [[ -f "$LATEST_LOCAL" ]]; then
-    RESTORE_SOURCE="$LATEST_LOCAL"
-    echo "[restore-notify] Using local backup: $LATEST_LOCAL"
-else
-    echo "[restore-notify] No local backups found. Trying GDrive..."
-    TMP_DIR=$(mktemp -d)
-    LATEST_REMOTE=$(rclone lsf "$RCLONE_REMOTE" --max-age 0 --files-only -R | grep '\.tar\.zst$' | sort -r | head -n1 || true)
-    if [[ -n "$LATEST_REMOTE" ]]; then
-        echo "[restore-notify] Found remote backup: $LATEST_REMOTE"
-        rclone copy "$RCLONE_REMOTE/$LATEST_REMOTE" "$TMP_DIR"
-        RESTORE_SOURCE="$TMP_DIR/$LATEST_REMOTE"
+if [[ "$(ls -A "$SRC_DIR")" ]]; then
+    echo "⚠️  Data folder $SRC_DIR already contains files."
+    read -rp "Do you want to remove its contents and continue? Type YES to confirm: " REMOVE_CONFIRM
+    if [[ "$REMOVE_CONFIRM" != "YES" ]]; then
+        echo "Restore aborted."
+        exit 1
     else
-        LOG_CONTENT="No backups available locally or on GDrive."
-        echo "[restore-notify] $LOG_CONTENT"
-        RESTORE_SOURCE=""
+        echo "[restore] Clearing existing data..."
+        rm -rf "$SRC_DIR"/*
     fi
 fi
 
 # -----------------------------
-# Perform restore
+# Gather backups
 # -----------------------------
-if [[ -n "$RESTORE_SOURCE" ]] && [[ -f "$RESTORE_SOURCE" ]]; then
-    tar xf "$RESTORE_SOURCE" -C "$SRC_DIR"
-    RESTORE_STATUS="Success"
-    RESTORE_PATH="$RESTORE_SOURCE"
-    LOG_CONTENT="Restore completed successfully from $RESTORE_SOURCE"
-else
-    LOG_CONTENT="Restore failed: no valid backup found."
+echo "[restore] Scanning local backups..."
+mapfile -t LOCAL_BACKUPS < <(ls -1t "$DEST_DIR"/*.tar.zst 2>/dev/null)
+
+echo "[restore] Scanning GDrive backups..."
+mapfile -t REMOTE_BACKUPS < <(
+    rclone lsf "$RCLONE_REMOTE" --files-only \
+    | grep '\.tar\.zst$' | sort -r
+)
+
+TOTAL_LOCAL=${#LOCAL_BACKUPS[@]}
+TOTAL_REMOTE=${#REMOTE_BACKUPS[@]}
+
+if [[ $TOTAL_LOCAL -eq 0 && $TOTAL_REMOTE -eq 0 ]]; then
+    echo "[restore] No backups found"
+    exit 1
 fi
 
 # -----------------------------
-# Backup time
+# Interactive menu
+# -----------------------------
+PAGE=0
+while true; do
+    clear
+    echo "Available Backups (page $((PAGE+1)))"
+    echo "--------------------------------------"
+
+    START=$((PAGE * PAGE_SIZE))
+    END=$((START + PAGE_SIZE))
+    INDEX=1
+
+    for ((i=START; i<END; i++)); do
+        if [[ $i -lt $TOTAL_LOCAL ]]; then
+            FILE="${LOCAL_BACKUPS[$i]}"
+            echo " $INDEX) [LOCAL ] $(basename "$FILE")"
+        elif [[ $((i - TOTAL_LOCAL)) -lt $TOTAL_REMOTE ]]; then
+            FILE="${REMOTE_BACKUPS[$((i - TOTAL_LOCAL))]}"
+            echo " $INDEX) [GDRIVE] $FILE"
+        fi
+        ((INDEX++))
+    done
+
+    echo
+    echo "n) Next page    p) Previous page"
+    echo "q) Quit"
+    echo
+    read -rp "Select a backup: " CHOICE
+
+    case "$CHOICE" in
+        q) exit 0 ;;
+        n)
+            (( (PAGE+1)*PAGE_SIZE < TOTAL_LOCAL+TOTAL_REMOTE )) && ((PAGE++))
+            continue
+            ;;
+        p)
+            (( PAGE > 0 )) && ((PAGE--))
+            continue
+            ;;
+        [1-5])
+            SELECTED_INDEX=$((START + CHOICE - 1))
+            break
+            ;;
+        *)
+            continue
+            ;;
+    esac
+done
+
+# -----------------------------
+# Resolve selection
+# -----------------------------
+if [[ $SELECTED_INDEX -lt $TOTAL_LOCAL ]]; then
+    RESTORE_SOURCE="${LOCAL_BACKUPS[$SELECTED_INDEX]}"
+    SOURCE_TYPE="LOCAL"
+else
+    TMP_DIR=$(mktemp -d)
+    REMOTE_INDEX=$((SELECTED_INDEX - TOTAL_LOCAL))
+    FILE="${REMOTE_BACKUPS[$REMOTE_INDEX]}"
+    echo "[restore] Downloading $FILE from GDrive..."
+    rclone copy "$RCLONE_REMOTE/$FILE" "$TMP_DIR"
+    RESTORE_SOURCE="$TMP_DIR/$FILE"
+    SOURCE_TYPE="GDRIVE"
+fi
+
+echo
+echo "[DEBUG] Backup source: $RESTORE_SOURCE"
+echo "[DEBUG] Destination folder: $SRC_DIR"
+echo "[DEBUG] Contents of backup (top 20 files):"
+zstd -dc "$RESTORE_SOURCE" | tar -tf - | head -20
+
+# Detect the top-level folder in the tar (if any)
+TOP_LEVEL_FOLDER=$(zstd -dc "$RESTORE_SOURCE" | tar -tf - | head -1 | cut -d/ -f1)
+WORLD_PATH="$SRC_DIR/$TOP_LEVEL_FOLDER"
+
+# -----------------------------
+# Confirm restore
+# -----------------------------
+echo
+echo "⚠️  This will restore backup into: $WORLD_PATH"
+read -rp "Type YES to continue: " CONFIRM
+[[ "$CONFIRM" != "YES" ]] && { echo "Restore cancelled."; exit 1; }
+
+# -----------------------------
+# Restore
+# -----------------------------
+# Ensure world folder exists
+mkdir -p "$WORLD_PATH"
+
+echo "[restore] Restoring backup..."
+zstd -dc "$RESTORE_SOURCE" | tar -xf - -C "$SRC_DIR"
+TAR_STATUS=$?
+
+if [[ $TAR_STATUS -eq 0 ]]; then
+    RESTORE_STATUS="Success"
+    RESTORE_PATH="$RESTORE_SOURCE"
+    LOG_CONTENT="Restored from $SOURCE_TYPE backup into $WORLD_PATH"
+else
+    LOG_CONTENT="Restore failed (tar exit $TAR_STATUS)"
+fi
+
+# -----------------------------
+# Timing
 # -----------------------------
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
-HOURS=$((DURATION / 3600))
-MINS=$(((DURATION % 3600) / 60))
-SECS=$((DURATION % 60))
-RESTORE_TIME="${HOURS} hrs ${MINS} mins ${SECS} sec"
-
-# -----------------------------
-# Status & color
-# -----------------------------
-if [[ "$RESTORE_STATUS" == "Success" ]]; then
-    STATUS_ICON="🟢"
-    COLOR=65280
-    STATUS_TEXT="Success"
-else
-    STATUS_ICON="🔴"
-    COLOR=16711680
-    STATUS_TEXT="Failure"
-fi
+RESTORE_TIME="$((DURATION/60)) mins $((DURATION%60)) sec"
 
 # -----------------------------
 # Discord notification
 # -----------------------------
+COLOR=16711680
+ICON="🔴"
+[[ "$RESTORE_STATUS" == "Success" ]] && COLOR=65280 && ICON="🟢"
+
 PAYLOAD=$(cat <<EOF
 {
   "username": "$DISCORD_USERNAME",
   "embeds": [
     {
-      "title": "$STATUS_ICON Minecraft Restore Status : $STATUS_TEXT",
+      "title": "$ICON Minecraft Restore Status",
       "color": $COLOR,
       "fields": [
         {
-          "name": "Restore Log",
-          "value": "Restore Status   : $RESTORE_STATUS\nRestore Path     : $RESTORE_PATH\nRestore Time     : $RESTORE_TIME\n\nRecent Logs:\n\`\`\`$LOG_CONTENT\`\`\`"
+          "name": "Restore Details",
+          "value": "Status: $RESTORE_STATUS\nTime: $RESTORE_TIME\nBackup path: $RESTORE_PATH\nRestored world folder: $WORLD_PATH\n\n$LOG_CONTENT"
         }
       ]
     }
@@ -100,16 +194,15 @@ PAYLOAD=$(cat <<EOF
 EOF
 )
 
-if [[ -n "$DISCORD_WEBHOOK_URL" ]]; then
-    curl -s -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL"
-    echo "[restore-notify] Discord notification sent with status: $STATUS_TEXT"
-else
-    echo "[restore-notify] Discord webhook not configured. Skipping notification."
-fi
+[[ -n "$DISCORD_WEBHOOK_URL" ]] && \
+  curl -s -H "Content-Type: application/json" \
+       -X POST -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL"
 
 # -----------------------------
-# Cleanup temp dir if used
+# Cleanup
 # -----------------------------
-if [[ -n "${TMP_DIR:-}" ]] && [[ -d "$TMP_DIR" ]]; then
-    rm -rf "$TMP_DIR"
-fi
+[[ -n "${TMP_DIR:-}" ]] && rm -rf "$TMP_DIR"
+
+echo
+echo "✅ Restore completed with status: $RESTORE_STATUS"
+echo "Restored world folder: $WORLD_PATH"

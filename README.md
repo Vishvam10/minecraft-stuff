@@ -2,43 +2,54 @@
 
 #### Basic Server Actions
 
-```bash
-# Build images (if you change something in yml config)
-docker compose -f mc-server.yml build
+1. Build containers
 
-# Selective Build
-docker compose build mc-backup
+    ```bash
+        # Build images (if you change something in yml config)
+        docker compose -f mc-server.yml build
 
-```
+        # Selective Build
+        docker compose build mc-backup
+    ```
 
-```bash
-# Start services
-docker compose -f mc-server.yml up -d
+2. Start / stop containers
 
-# Stop services
-docker compose -f mc-server.yml down
+    ```bash
+        # Start services
+        docker compose -f mc-server.yml up -d
 
-# Restart all containers
-docker compose -f mc-server.yml restart
+        # Stop services
+        docker compose -f mc-server.yml down
 
-# Selective restart
-docker compose -f mc-server.yml restart mc
-```
+        # Restart all containers
+        docker compose -f mc-server.yml restart
 
-#### Manaul Backup and Restore
+        # Selective restart (what we usually want)
+        docker compose -f mc-server.yml up -d mc mc-backup
+    ```
+
+#### Backup and Restore
 
 1. Trigger backup now
 
     ```bash
         docker exec mc-backup backup now
     ```
-2. List backups
+
+2. Restore backups (interactive)
 
     ```bash
-        docker exec mc-backup ls -lh /backups
+        # Stop the server container:
+        docker compose -f mc-server.yml stop mc
+
+        # Run restore interactively
+        docker compose -f mc-server.yml run --rm mc-restore
+
+        # Start the server again:
+        docker compose -f mc-server.yml start mc
     ```
 
-#### Restore From Google Drive
+#### Manual Restore From Google Drive
 
 ```bash
 # Stop everything
